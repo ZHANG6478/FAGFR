@@ -16,7 +16,7 @@ class ChannelAttention(nn.Module):
         super(ChannelAttention, self).__init__()
         self.global_avg_pool = nn.AdaptiveAvgPool2d(1)
         self.global_max_pool = nn.AdaptiveMaxPool2d(1)
-        self.noise_reduction = nn.Sequential(
+        self.feature_filter = nn.Sequential(
             nn.Conv2d(channel, channel // ratio, kernel_size=1, bias=False),
             nn.ReLU(inplace=True),
             nn.Conv2d(channel // ratio, channel, kernel_size=1, bias=False),
@@ -33,8 +33,8 @@ class ChannelAttention(nn.Module):
         avg_out = self.fc(self.global_avg_pool(x))
         max_out = self.fc(self.global_max_pool(x))
         combined_out = avg_out + max_out
-        filtered_out = self.noise_reduction(combined_out)  # 引入语义降噪
-        return x * self.sigmoid(filtered_out)
+        filtered_x = x * self.feature_filter(x)  # 特征过滤
+        return filtered_x * self.sigmoid(combined_out)
 
 
 class EnhancedSpatialAttention(nn.Module):
@@ -43,26 +43,24 @@ class EnhancedSpatialAttention(nn.Module):
         padding = kernel_size // 2
         #高斯滤波
         self.gaussian_blur = nn.Conv2d(1, 1, kernel_size=5, stride=1, padding=2, bias=False)
-        self.gaussian_blur.weight.data.fill_(1 / 25.0)  # 初始化为均值滤波
+        gaussian_kernel = get_gaussian_kernel(kernel_size=5, sigma=1.0)
+        self.gaussian_blur.weight.data.copy_(gaussian_kernel.view(1, 1, 5, 5))
+        self.gaussian_blur.weight.requires_grad = False
 
         self.conv = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
         self.sigmoid = nn.Sigmoid()
 
-        # 引入语义降噪模块
-        self.noise_reduction = nn.Sequential(
-            nn.Conv2d(1, 1, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(1, 1, kernel_size=3, padding=1, bias=False),
-            nn.Sigmoid()
-        )
+        #语义降噪
+        self.noise_reduction = nn.Conv2d(1, 1, kernel_size=3, padding=1, bias=False)
+        self.noise_reduction.weight.data.fill_(1 / 9.0)
 
     def forward(self, x):
         max_pool_out, _ = torch.max(x, dim=1, keepdim=True)
         mean_pool_out = torch.mean(x, dim=1, keepdim=True)
         pool_out = torch.cat([max_pool_out, mean_pool_out], dim=1)
         spatial_attention_map = self.conv(pool_out)
-        spatial_attention_map = self.gaussian_blur(spatial_attention_map)
-        attention_weights = self.noise_reduction(spatial_attention_map)  # 应用语义降噪
+        spatial_attention_map = self.gaussian_blur(spatial_attention_map)  # 高斯滤波
+        attention_weights = self.noise_reduction(spatial_attention_map)  # 语义降噪
         return x * self.sigmoid(attention_weights)
 
 
